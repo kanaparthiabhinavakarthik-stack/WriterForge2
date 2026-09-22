@@ -66,95 +66,127 @@ export type ForgeResult = {
   beats: { title: string; summary: string; health: string }[];
 };
 
+```ts
 export const forgeSection = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) => inputSchema.parse(data))
   .handler(async ({ data }): Promise<ForgeResult> => {
-    const apiKey = process.env["LOVABLE_API_KEY"];
-    if (!apiKey) throw new Error("The writing engine is not configured yet.");
+    const apiKey = process.env["OPENAI_API_KEY"];
+
+    if (!apiKey) {
+      throw new Error("The AI writing engine is not configured yet.");
+    }
 
     const instructions = [
       SYSTEM,
       MODE_BRIEF[data.mode],
       `This is section ${data.part} of ${data.total} of the manuscript.`,
-      data.intent ? `The author's own instruction, which outranks defaults: ${data.intent}` : "",
+      data.intent
+        ? `The author's own instruction, which outranks defaults: ${data.intent}`
+        : "",
     ]
       .filter(Boolean)
       .join("\n\n");
 
-    const res = await fetch("https://ai.gateway.lovable.dev/v1/responses", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Lovable-API-Key": apiKey,
-        "X-Lovable-AIG-SDK": "fetch",
-      },
-      body: JSON.stringify({
-        model: "openai/gpt-5.6-terra",
-        stream: true,
-        instructions,
-        input: [
-          {
-            role: "user",
-            content: [{ type: "input_text", text: data.text }],
-          },
-        ],
-        reasoning: { effort: "low", summary: "auto" },
-        text: {
-          format: {
-            type: "json_schema",
-            name: "forge_result",
-            strict: true,
-            schema: jsonSchema,
-          },
+    const response = await fetch(
+      "https://api.openai.com/v1/responses",
+      {
+        method: "POST",
+
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
         },
-      }),
-    });
 
-    if (!res.ok || !res.body) {
-      const detail = await res.text().catch(() => "");
-      if (res.status === 429) throw new Error("The engine is busy right now — try again in a moment.");
-      if (res.status === 402) throw new Error("This workspace is out of AI credits.");
-      throw new Error(`The engine refused this section (${res.status}). ${detail.slice(0, 200)}`);
-    }
+        body: JSON.stringify({
+          model: "gpt-5.6-terra",
 
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let out = "";
+          instructions,
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-      for (const line of lines) {
-        if (!line.startsWith("data:")) continue;
-        const payload = line.slice(5).trim();
-        if (!payload || payload === "[DONE]") continue;
-        try {
-          const evt = JSON.parse(payload);
-          if (evt.type === "response.output_text.delta" && typeof evt.delta === "string") {
-            out += evt.delta;
-          } else if (evt.type === "response.completed" && !out) {
-            out = evt.response?.output_text ?? "";
-          }
-        } catch {
-          /* ignore partial frames */
-        }
+          input: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "input_text",
+                  text: data.text,
+                },
+              ],
+            },
+          ],
+
+          reasoning: {
+            effort: "low",
+          },
+
+          text: {
+            format: {
+              type: "json_schema",
+              name: "forge_result",
+              strict: true,
+              schema: jsonSchema,
+            },
+          },
+        }),
       }
+    );
+
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+
+      if (response.status === 429) {
+        throw new Error(
+          "The AI engine is busy right now. Please try again."
+        );
+      }
+
+      if (response.status === 401) {
+        throw new Error(
+          "The AI API key is invalid or not configured correctly."
+        );
+      }
+
+      throw new Error(
+        `The AI engine returned an error (${response.status}). ${detail.slice(
+          0,
+          200
+        )}`
+      );
     }
 
-    if (!out.trim()) throw new Error("The engine returned nothing for this section.");
+    const result = await response.json();
+
+    const outputText =
+      result.output_text ??
+      result.output
+        ?.flatMap((item: any) => item.content ?? [])
+        ?.filter((item: any) => item.type === "output_text")
+        ?.map((item: any) => item.text)
+        ?.join("") ??
+      "";
+
+    if (!outputText.trim()) {
+      throw new Error("The AI engine returned no text.");
+    }
 
     try {
-      const parsed = JSON.parse(out) as ForgeResult;
+      const parsed = JSON.parse(outputText) as ForgeResult;
+
       return {
         revised: parsed.revised ?? "",
-        notes: Array.isArray(parsed.notes) ? parsed.notes.slice(0, 12) : [],
-        beats: Array.isArray(parsed.beats) ? parsed.beats.slice(0, 5) : [],
+        notes: Array.isArray(parsed.notes)
+          ? parsed.notes.slice(0, 12)
+          : [],
+        beats: Array.isArray(parsed.beats)
+          ? parsed.beats.slice(0, 5)
+          : [],
       };
     } catch {
-      return { revised: out, notes: [], beats: [] };
+      return {
+        revised: outputText,
+        notes: [],
+        beats: [],
+      };
     }
   });
+```
+
