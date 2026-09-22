@@ -66,14 +66,13 @@ export type ForgeResult = {
   beats: { title: string; summary: string; health: string }[];
 };
 
-```ts
 export const forgeSection = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) => inputSchema.parse(data))
   .handler(async ({ data }): Promise<ForgeResult> => {
     const apiKey = process.env["OPENAI_API_KEY"];
 
     if (!apiKey) {
-      throw new Error("The AI writing engine is not configured yet.");
+      throw new Error("The writing engine is not configured yet.");
     }
 
     const instructions = [
@@ -87,85 +86,79 @@ export const forgeSection = createServerFn({ method: "POST" })
       .filter(Boolean)
       .join("\n\n");
 
-    const response = await fetch(
-      "https://api.openai.com/v1/responses",
-      {
-        method: "POST",
+    const response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
 
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+
+      body: JSON.stringify({
+        model: "gpt-5.6-terra",
+
+        instructions,
+
+        input: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: data.text,
+              },
+            ],
+          },
+        ],
+
+        reasoning: {
+          effort: "low",
         },
 
-        body: JSON.stringify({
-          model: "gpt-5.6-terra",
-
-          instructions,
-
-          input: [
-            {
-              role: "user",
-              content: [
-                {
-                  type: "input_text",
-                  text: data.text,
-                },
-              ],
-            },
-          ],
-
-          reasoning: {
-            effort: "low",
+        text: {
+          format: {
+            type: "json_schema",
+            name: "forge_result",
+            strict: true,
+            schema: jsonSchema,
           },
-
-          text: {
-            format: {
-              type: "json_schema",
-              name: "forge_result",
-              strict: true,
-              schema: jsonSchema,
-            },
-          },
-        }),
-      }
-    );
+        },
+      }),
+    });
 
     if (!response.ok) {
       const detail = await response.text().catch(() => "");
 
+      if (response.status === 401) {
+        throw new Error("The AI API key is invalid or unauthorized.");
+      }
+
       if (response.status === 429) {
         throw new Error(
-          "The AI engine is busy right now. Please try again."
+          "The writing engine is busy right now — try again in a moment.",
         );
       }
 
-      if (response.status === 401) {
+      if (response.status === 402) {
         throw new Error(
-          "The AI API key is invalid or not configured correctly."
+          "The AI account does not have available API credits.",
         );
       }
 
       throw new Error(
-        `The AI engine returned an error (${response.status}). ${detail.slice(
+        `The writing engine refused this section (${response.status}). ${detail.slice(
           0,
-          200
-        )}`
+          300,
+        )}`,
       );
     }
 
     const result = await response.json();
 
-    const outputText =
-      result.output_text ??
-      result.output
-        ?.flatMap((item: any) => item.content ?? [])
-        ?.filter((item: any) => item.type === "output_text")
-        ?.map((item: any) => item.text)
-        ?.join("") ??
-      "";
+    const outputText = result.output_text;
 
-    if (!outputText.trim()) {
-      throw new Error("The AI engine returned no text.");
+    if (!outputText || typeof outputText !== "string") {
+      throw new Error("The writing engine returned no usable result.");
     }
 
     try {
@@ -181,12 +174,8 @@ export const forgeSection = createServerFn({ method: "POST" })
           : [],
       };
     } catch {
-      return {
-        revised: outputText,
-        notes: [],
-        beats: [],
-      };
+      throw new Error(
+        "The writing engine returned an invalid response format.",
+      );
     }
   });
-```
-
