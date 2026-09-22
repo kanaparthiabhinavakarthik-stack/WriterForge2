@@ -69,7 +69,7 @@ export type ForgeResult = {
 export const forgeSection = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) => inputSchema.parse(data))
   .handler(async ({ data }): Promise<ForgeResult> => {
-    const apiKey = process.env["OPENAI_API_KEY"];
+    const apiKey = process.env["GEMINI_API_KEY"];
 
     if (!apiKey) {
       throw new Error("The writing engine is not configured yet.");
@@ -86,52 +86,44 @@ export const forgeSection = createServerFn({ method: "POST" })
       .filter(Boolean)
       .join("\n\n");
 
-    const response = await fetch("https://api.openai.com/v1/responses", {
-      method: "POST",
+    const prompt = `${instructions}
 
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
+Here is the manuscript section to process:
+
+${data.text}`;
+
+    const response = await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
+      {
+        method: "POST",
+
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": apiKey,
+        },
+
+        body: JSON.stringify({
+          contents: [
+            {
+              role: "user",
+              parts: [
+                {
+                  text: prompt,
+                },
+              ],
+            },
+          ],
+
+          generationConfig: {
+            responseMimeType: "application/json",
+            responseSchema: jsonSchema,
+          },
+        }),
       },
-
-      body: JSON.stringify({
-        model: "gpt-5.6-terra",
-
-        instructions,
-
-        input: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "input_text",
-                text: data.text,
-              },
-            ],
-          },
-        ],
-
-        reasoning: {
-          effort: "low",
-        },
-
-        text: {
-          format: {
-            type: "json_schema",
-            name: "forge_result",
-            strict: true,
-            schema: jsonSchema,
-          },
-        },
-      }),
-    });
+    );
 
     if (!response.ok) {
       const detail = await response.text().catch(() => "");
-
-      if (response.status === 401) {
-        throw new Error("The AI API key is invalid or unauthorized.");
-      }
 
       if (response.status === 429) {
         throw new Error(
@@ -139,9 +131,9 @@ export const forgeSection = createServerFn({ method: "POST" })
         );
       }
 
-      if (response.status === 402) {
+      if (response.status === 401 || response.status === 403) {
         throw new Error(
-          "The AI account does not have available API credits.",
+          "The Gemini API key is invalid or does not have permission to use the Gemini API.",
         );
       }
 
@@ -155,9 +147,12 @@ export const forgeSection = createServerFn({ method: "POST" })
 
     const result = await response.json();
 
-    const outputText = result.output_text;
+    const outputText =
+      result?.candidates?.[0]?.content?.parts
+        ?.map((part: { text?: string }) => part.text ?? "")
+        .join("") ?? "";
 
-    if (!outputText || typeof outputText !== "string") {
+    if (!outputText.trim()) {
       throw new Error("The writing engine returned no usable result.");
     }
 
