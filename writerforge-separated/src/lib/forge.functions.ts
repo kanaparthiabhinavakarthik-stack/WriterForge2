@@ -69,108 +69,327 @@ export type ForgeResult = {
 export const forgeSection = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) => inputSchema.parse(data))
   .handler(async ({ data }): Promise<ForgeResult> => {
-    const apiKey = process.env["GEMINI_API_KEY"];
+    let revised = data.text.trim();
 
-    if (!apiKey) {
-      throw new Error("The writing engine is not configured yet.");
+    const notes: ForgeResult["notes"] = [];
+    const beats: ForgeResult["beats"] = [];
+
+    // ------------------------------------------------------------
+    // 1. BASIC GRAMMAR / MECHANICS
+    // ------------------------------------------------------------
+
+    const original = revised;
+
+    // Normalize excessive spaces.
+    revised = revised
+      .replace(/[ \t]{2,}/g, " ")
+      .replace(/ +([,.!?;:])/g, "$1")
+      .replace(/([,.!?;:])([A-Za-z])/g, "$1 $2");
+
+    // Common subject-verb corrections.
+    const grammarRules: Array<[RegExp, string, string, string]> = [
+      [
+        /\bI is\b/gi,
+        "I am",
+        "grammar",
+        "Corrected subject-verb agreement.",
+      ],
+      [
+        /\bI are\b/gi,
+        "I am",
+        "grammar",
+        "Corrected subject-verb agreement.",
+      ],
+      [
+        /\bhe are\b/gi,
+        "he is",
+        "grammar",
+        "Corrected subject-verb agreement.",
+      ],
+      [
+        /\bshe are\b/gi,
+        "she is",
+        "grammar",
+        "Corrected subject-verb agreement.",
+      ],
+      [
+        /\bthey is\b/gi,
+        "they are",
+        "grammar",
+        "Corrected subject-verb agreement.",
+      ],
+      [
+        /\bwe is\b/gi,
+        "we are",
+        "grammar",
+        "Corrected subject-verb agreement.",
+      ],
+      [
+        /\byou is\b/gi,
+        "you are",
+        "grammar",
+        "Corrected subject-verb agreement.",
+      ],
+      [
+        /\bhe don't\b/gi,
+        "he doesn't",
+        "grammar",
+        "Corrected subject-verb agreement.",
+      ],
+      [
+        /\bshe don't\b/gi,
+        "she doesn't",
+        "grammar",
+        "Corrected subject-verb agreement.",
+      ],
+      [
+        /\bit don't\b/gi,
+        "it doesn't",
+        "grammar",
+        "Corrected subject-verb agreement.",
+      ],
+      [
+        /\bthey doesn't\b/gi,
+        "they don't",
+        "grammar",
+        "Corrected subject-verb agreement.",
+      ],
+      [
+        /\bwe doesn't\b/gi,
+        "we don't",
+        "grammar",
+        "Corrected subject-verb agreement.",
+      ],
+      [
+        /\bI has\b/gi,
+        "I have",
+        "grammar",
+        "Corrected subject-verb agreement.",
+      ],
+      [
+        /\bthey has\b/gi,
+        "they have",
+        "grammar",
+        "Corrected subject-verb agreement.",
+      ],
+      [
+        /\bwe has\b/gi,
+        "we have",
+        "grammar",
+        "Corrected subject-verb agreement.",
+      ],
+    ];
+
+    for (const [pattern, replacement, kind, comment] of grammarRules) {
+      const before = revised;
+      revised = revised.replace(pattern, replacement);
+
+      if (before !== revised && notes.length < 12) {
+        notes.push({
+          kind,
+          before: before.slice(0, 160),
+          after: revised.slice(0, 160),
+          comment,
+        });
+      }
     }
 
-    const instructions = [
-      SYSTEM,
-      MODE_BRIEF[data.mode],
-      `This is section ${data.part} of ${data.total} of the manuscript.`,
-      data.intent
-        ? `The author's own instruction, which outranks defaults: ${data.intent}`
-        : "",
-    ]
-      .filter(Boolean)
-      .join("\n\n");
+    // Common verb mistakes.
+    const verbRules: Array<[RegExp, string, string]> = [
+      [/\bhe walk\b/gi, "he walks", "Corrected verb agreement."],
+      [/\bshe walk\b/gi, "she walks", "Corrected verb agreement."],
+      [/\bhe go\b/gi, "he goes", "Corrected verb agreement."],
+      [/\bshe go\b/gi, "she goes", "Corrected verb agreement."],
+      [/\bhe have\b/gi, "he has", "Corrected verb agreement."],
+      [/\bshe have\b/gi, "she has", "Corrected verb agreement."],
+      [/\bit have\b/gi, "it has", "Corrected verb agreement."],
+      [/\bhe do\b/gi, "he does", "Corrected verb agreement."],
+      [/\bshe do\b/gi, "she does", "Corrected verb agreement."],
+    ];
 
-    const prompt = `${instructions}
+    for (const [pattern, replacement, comment] of verbRules) {
+      const before = revised;
+      revised = revised.replace(pattern, replacement);
 
-Here is the manuscript section to process:
+      if (before !== revised && notes.length < 12) {
+        notes.push({
+          kind: "grammar",
+          before: before.slice(0, 160),
+          after: revised.slice(0, 160),
+          comment,
+        });
+      }
+    }
 
-${data.text}`;
-
-    const response = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
-      {
-        method: "POST",
-
-        headers: {
-          "Content-Type": "application/json",
-          "x-goog-api-key": apiKey,
-        },
-
-        body: JSON.stringify({
-          contents: [
-            {
-              role: "user",
-              parts: [
-                {
-                  text: prompt,
-                },
-              ],
-            },
-          ],
-
-          generationConfig: {
-            responseMimeType: "application/json",
-            responseSchema: jsonSchema,
-          },
-        }),
-      },
+    // Remove repeated words such as "the the".
+    revised = revised.replace(
+      /\b(\w+)\s+\1\b/gi,
+      "$1",
     );
 
-    if (!response.ok) {
-      const detail = await response.text().catch(() => "");
+    // Capitalize the first letter after sentence-ending punctuation.
+    revised = revised.replace(
+      /([.!?]\s+)([a-z])/g,
+      (_, punctuation: string, letter: string) =>
+        punctuation + letter.toUpperCase(),
+    );
 
-      if (response.status === 429) {
-        throw new Error(
-          "The writing engine is busy right now — try again in a moment.",
-        );
+    // ------------------------------------------------------------
+    // 2. FLOW MODE
+    // ------------------------------------------------------------
+
+    if (data.mode === "flow") {
+      // Remove very common redundant phrases.
+      const flowRules: Array<[RegExp, string, string]> = [
+        [
+          /\bat this point in time\b/gi,
+          "now",
+          "Reduced an unnecessarily long phrase.",
+        ],
+        [
+          /\bdue to the fact that\b/gi,
+          "because",
+          "Simplified a wordy transition.",
+        ],
+        [
+          /\bin order to\b/gi,
+          "to",
+          "Simplified a wordy construction.",
+        ],
+        [
+          /\bfor the purpose of\b/gi,
+          "for",
+          "Reduced unnecessary wording.",
+        ],
+        [
+          /\bvery unique\b/gi,
+          "unique",
+          "Removed an unnecessary intensifier.",
+        ],
+      ];
+
+      for (const [pattern, replacement, comment] of flowRules) {
+        const before = revised;
+        revised = revised.replace(pattern, replacement);
+
+        if (before !== revised && notes.length < 12) {
+          notes.push({
+            kind: "flow",
+            before: before.slice(0, 160),
+            after: revised.slice(0, 160),
+            comment,
+          });
+        }
       }
 
-      if (response.status === 401 || response.status === 403) {
-        throw new Error(
-          "The Gemini API key is invalid or does not have permission to use the Gemini API.",
-        );
+      // Remove consecutive duplicate sentences.
+      const paragraphs = revised.split(/\n\s*\n/);
+
+      const cleanedParagraphs: string[] = [];
+
+      for (const paragraph of paragraphs) {
+        const sentences = paragraph
+          .split(/(?<=[.!?])\s+/)
+          .filter(Boolean);
+
+        const cleanedSentences: string[] = [];
+
+        for (const sentence of sentences) {
+          const previous =
+            cleanedSentences[cleanedSentences.length - 1];
+
+          if (
+            previous &&
+            previous.trim().toLowerCase() === sentence.trim().toLowerCase()
+          ) {
+            if (notes.length < 12) {
+              notes.push({
+                kind: "flow",
+                before: sentence,
+                after: "",
+                comment: "Removed a duplicated sentence.",
+              });
+            }
+            continue;
+          }
+
+          cleanedSentences.push(sentence);
+        }
+
+        cleanedParagraphs.push(cleanedSentences.join(" "));
       }
 
-      throw new Error(
-        `The writing engine refused this section (${response.status}). ${detail.slice(
-          0,
-          300,
-        )}`,
-      );
+      revised = cleanedParagraphs.join("\n\n");
     }
 
-    const result = await response.json();
+    // ------------------------------------------------------------
+    // 3. BUILD SIMPLE STORY BEATS
+    // ------------------------------------------------------------
 
-    const outputText =
-      result?.candidates?.[0]?.content?.parts
-        ?.map((part: { text?: string }) => part.text ?? "")
-        .join("") ?? "";
+    const paragraphList = revised
+      .split(/\n\s*\n/)
+      .map((paragraph) => paragraph.trim())
+      .filter(Boolean);
 
-    if (!outputText.trim()) {
-      throw new Error("The writing engine returned no usable result.");
+    if (paragraphList.length > 0) {
+      const maxBeats = Math.min(5, paragraphList.length);
+
+      for (let i = 0; i < maxBeats; i++) {
+        const paragraph = paragraphList[i];
+
+        const words = paragraph
+          .replace(/\s+/g, " ")
+          .trim()
+          .split(" ");
+
+        const summary =
+          words.length > 35
+            ? words.slice(0, 35).join(" ") + "..."
+            : words.join(" ");
+
+        let health = "steady";
+
+        if (data.mode === "flow") {
+          if (words.length < 12) {
+            health = "drags";
+          } else if (words.length > 80) {
+            health = "runs hot";
+          } else if (i === maxBeats - 1) {
+            health = "resolves";
+          }
+        }
+
+        beats.push({
+          title: `Beat ${i + 1}`,
+          summary,
+          health,
+        });
+      }
     }
 
-    try {
-      const parsed = JSON.parse(outputText) as ForgeResult;
+    // ------------------------------------------------------------
+    // 4. FALLBACK NOTE
+    // ------------------------------------------------------------
 
-      return {
-        revised: parsed.revised ?? "",
-        notes: Array.isArray(parsed.notes)
-          ? parsed.notes.slice(0, 12)
-          : [],
-        beats: Array.isArray(parsed.beats)
-          ? parsed.beats.slice(0, 5)
-          : [],
-      };
-    } catch {
-      throw new Error(
-        "The writing engine returned an invalid response format.",
-      );
+    if (original === revised && notes.length === 0) {
+      notes.push({
+        kind: data.mode === "grammar" ? "grammar" : "flow",
+        before: original.slice(0, 160),
+        after: revised.slice(0, 160),
+        comment:
+          data.mode === "grammar"
+            ? "No obvious rule-based grammar problems were detected."
+            : "No obvious rule-based flow problems were detected.",
+      });
     }
+
+    // ------------------------------------------------------------
+    // 5. RETURN THE SAME SHAPE EXPECTED BY index.tsx
+    // ------------------------------------------------------------
+
+    return {
+      revised,
+      notes: notes.slice(0, 12),
+      beats: beats.slice(0, 5),
+    };
   });
